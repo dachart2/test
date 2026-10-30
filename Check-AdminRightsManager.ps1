@@ -93,6 +93,8 @@ $checkBlock = {
                         $apps += [pscustomobject]@{
                             DisplayName    = $name
                             DisplayVersion = [string]$sub.GetValue('DisplayVersion')
+                            Status         = $null
+                            Quelle         = "Registry ($view)"
                         }
                     }
                     $sub.Close()
@@ -104,45 +106,53 @@ $checkBlock = {
         }
     }
 
-    $source = 'Registry'
+    # Softwarecenter / ConfigMgr-Client immer zusaetzlich abfragen: per
+    # Skript verteilte Pakete haben oft keinen Uninstall-Eintrag.
+    try {
+        $apps += @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop |
+            Where-Object { $_.FullName -like $AppPattern -or $_.Name -like $AppPattern } |
+            Select-Object @{n = 'DisplayName';    e = { if ($_.FullName) { $_.FullName } else { $_.Name } } },
+                          @{n = 'DisplayVersion'; e = { $_.SoftwareVersion } },
+                          @{n = 'Status';         e = { $_.InstallState } },
+                          @{n = 'Quelle';         e = { 'Softwarecenter' } })
+    } catch {
+        # Kein ConfigMgr-Client vorhanden -> kein Fehler, nur Hinweis
+        $errors += "Softwarecenter: $($_.Exception.Message)"
+    }
+
+    # Gleiche Eintraege aus 64-/32-Bit-Registry nicht doppelt ausgeben
+    $apps = @($apps | Sort-Object DisplayName, DisplayVersion, Quelle -Unique)
+
+    $common = [ordered]@{
+        Computer        = $env:COMPUTERNAME
+        AdminGruppe     = $adminGroup
+        GruppeEnthalten = [bool]$found
+        GefundenAls     = ($found -join '; ')
+        AlleMitglieder  = ($members -join '; ')
+    }
+
     if (-not $apps) {
-        # Fallback: Softwarecenter / ConfigMgr-Client
-        try {
-            $apps = @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop |
-                Where-Object { $_.FullName -like $AppPattern -or $_.Name -like $AppPattern } |
-                Select-Object @{n = 'DisplayName';    e = { if ($_.FullName) { $_.FullName } else { $_.Name } } },
-                              @{n = 'DisplayVersion'; e = { $_.SoftwareVersion } },
-                              @{n = 'Installed';      e = { $_.InstallState } })
-            $source = 'Softwarecenter'
-        } catch {
-            $errors += "Softwarecenter: $($_.Exception.Message)"
-        }
+        $row = [ordered]@{}; foreach ($k in $common.Keys) { $row[$k] = $common[$k] }
+        $row.Programm = $null; $row.Version = $null; $row.Status = $null; $row.Quelle = $null
+        $row.Fehler   = ($errors -join ' | ')
+        [pscustomobject]$row
+        return
     }
 
-    $appName = $null; $appVersion = $null
-    if ($apps) {
-        $app     = $apps[0]
-        $appName = $app.DisplayName
-        if ($appName -match 'version\s*:\s*([\d\.]+)') {
-            $appVersion = $Matches[1]
+    # Eine Zeile pro gefundenem Programm-Eintrag
+    foreach ($app in $apps) {
+        if ($app.DisplayName -match 'version\s*:\s*([\d\.]+)') {
+            $version = $Matches[1]
         } else {
-            $appVersion = $app.DisplayVersion
+            $version = $app.DisplayVersion
         }
-        if ($source -eq 'Softwarecenter' -and $app.Installed -and $app.Installed -ne 'Installed') {
-            $appVersion = "$appVersion (Status: $($app.Installed))"
-        }
-    }
-
-    [pscustomobject]@{
-        Computer          = $env:COMPUTERNAME
-        AdminGruppe       = $adminGroup
-        GruppeEnthalten   = [bool]$found
-        GefundenAls       = ($found -join '; ')
-        AlleMitglieder    = ($members -join '; ')
-        Programm          = $appName
-        Version           = $appVersion
-        Quelle            = if ($apps) { $source } else { $null }
-        Fehler            = ($errors -join ' | ')
+        $row = [ordered]@{}; foreach ($k in $common.Keys) { $row[$k] = $common[$k] }
+        $row.Programm = $app.DisplayName
+        $row.Version  = $version
+        $row.Status   = $app.Status
+        $row.Quelle   = $app.Quelle
+        $row.Fehler   = ($errors -join ' | ')
+        [pscustomobject]$row
     }
 }
 
@@ -161,13 +171,17 @@ $results = foreach ($pc in $ComputerName) {
     } catch {
         [pscustomobject]@{
             Computer = $pc; AdminGruppe = $null; GruppeEnthalten = $null; GefundenAls = $null
-            AlleMitglieder = $null; Programm = $null; Version = $null; Quelle = $null
+            AlleMitglieder = $null; Programm = $null; Version = $null; Status = $null; Quelle = $null
             Fehler = "$($_.Exception.Message) [Zeile $($_.InvocationInfo.ScriptLineNumber)]"
         }
     }
 }
 
 $results | Format-List
+
+Write-Host ''
+Write-Host 'Kurzuebersicht:'
+$results | Format-Table Computer, GruppeEnthalten, Programm, Version, Status, Quelle -AutoSize
 
 if ($CsvPath) {
     $results | Export-Csv -Path $CsvPath -NoTypeInformation -Delimiter ';' -Encoding UTF8
