@@ -1,35 +1,43 @@
 <#
 .SYNOPSIS
-    Prüft, ob die Gruppe "dlg_workstations-lohr" Mitglied der lokalen
-    Administratoren-Gruppe ist, und ermittelt die installierte Version von
+    Checks whether the group "dlg_workstations-lohr" is a member of the local
+    Administrators group and lists the installed versions of
     "C-APP-AdminRightsManager-ENG".
 
 .DESCRIPTION
-    - Die lokale Administratoren-Gruppe wird über die SID S-1-5-32-544
-      gesucht, funktioniert also auf deutschen ("Administratoren") und
-      englischen ("Administrators") Systemen.
-    - Die Version wird aus der Registry (Uninstall-Schlüssel, 64- und 32-Bit)
-      gelesen. Steht die Version im Anzeigenamen, z. B.
-      "C-APP-AdminRightsManager-ENG (BRVZ-version : 03.02)", wird sie daraus
-      extrahiert, sonst wird DisplayVersion verwendet.
-    - Falls nichts in der Registry steht, wird zusätzlich im
-      ConfigMgr-/Softwarecenter-Client (WMI root\ccm\ClientSDK) gesucht.
+    - The local Administrators group is looked up via its well-known SID
+      S-1-5-32-544, so it works on both English ("Administrators") and
+      German ("Administratoren") systems.
+    - The group is matched by substring, e.g. "dlg_workstations-lohr" also
+      matches the domain group "U_RES_DLG_WORKSTATIONS-LOHR_II_IDS".
+    - Versions are read from the registry (Uninstall keys, 64- and 32-bit)
+      and from the ConfigMgr / Software Center client
+      (WMI root\ccm\ClientSDK, applications and packages). If the version is
+      part of the display name, e.g.
+      "C-APP-AdminRightsManager-ENG (BRVZ-version : 03.02)", it is extracted
+      from there, otherwise DisplayVersion is used.
 
 .PARAMETER ComputerName
-    Ein oder mehrere Rechner. Standard: der lokale Rechner.
-    Für Remote-Rechner muss WinRM (PowerShell Remoting) aktiv sein.
+    One or more computers. Default: the local computer.
+    Remote computers require WinRM (PowerShell Remoting) to be enabled.
 
 .PARAMETER ComputerListFile
-    Textdatei mit einem Rechnernamen pro Zeile.
+    Text file with one computer name per line.
 
 .PARAMETER CsvPath
-    Optional: Ergebnis zusätzlich als CSV speichern.
+    Optional: additionally save the result as CSV (one row per computer).
+
+.PARAMETER GroupName
+    Group to look for (substring, wildcards * and ? allowed).
+
+.PARAMETER AppPattern
+    Wildcard pattern for the program name.
 
 .EXAMPLE
     .\Check-AdminRightsManager.ps1
 
 .EXAMPLE
-    .\Check-AdminRightsManager.ps1 -ComputerListFile .\pcs.txt -CsvPath .\ergebnis.csv
+    .\Check-AdminRightsManager.ps1 -ComputerListFile .\pcs.txt -CsvPath .\result.csv
 #>
 [CmdletBinding()]
 param(
@@ -47,42 +55,42 @@ $checkBlock = {
     $adminGroup = $null
     $members    = @()
 
-    # --- 1. Lokale Administratoren-Gruppe -----------------------------------
+    # --- 1. Local Administrators group --------------------------------------
     try {
         $adminSid   = [System.Security.Principal.SecurityIdentifier]'S-1-5-32-544'
         $adminGroup = $adminSid.Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
     } catch {
-        $adminGroup = 'Administratoren'
-        $errors += "SID-Aufloesung: $($_.Exception.Message)"
+        $adminGroup = 'Administrators'
+        $errors += "SID lookup: $($_.Exception.Message)"
     }
 
-    # ADSI statt Get-LocalGroupMember, da letzteres bei verwaisten SIDs
-    # bzw. Azure-AD-Mitgliedern mit einem Fehler abbricht.
+    # ADSI instead of Get-LocalGroupMember, because the latter fails on
+    # orphaned SIDs or Azure AD members.
     try {
         $group = [ADSI]"WinNT://$env:COMPUTERNAME/$adminGroup,group"
         foreach ($m in @($group.psbase.Invoke('Members'))) {
             try {
                 $path = $m.GetType().InvokeMember('ADsPath', 'GetProperty', $null, $m, $null)
-                # WinNT://DOMAIN/Name  bzw.  WinNT://DOMAIN/PC/Name
+                # WinNT://DOMAIN/Name  or  WinNT://DOMAIN/PC/Name
                 $members += ($path -replace '^WinNT://', '' -replace '/', '\')
             } catch {
-                $errors += "Mitglied: $($_.Exception.Message)"
+                $errors += "Member: $($_.Exception.Message)"
             }
         }
     } catch {
-        $errors += "Admin-Gruppe: $($_.Exception.Message)"
+        $errors += "Admin group: $($_.Exception.Message)"
     }
 
-    # Teilstring-Suche: in der Domaene heisst die Gruppe z. B.
-    # "U_RES_DLG_WORKSTATIONS-LOHR_II_IDS". Eigene Wildcards (*, ?) im
-    # Parameter werden direkt verwendet.
+    # Substring match: in the domain the group is named e.g.
+    # "U_RES_DLG_WORKSTATIONS-LOHR_II_IDS". Wildcards (*, ?) passed in the
+    # parameter are used as-is.
     $groupPattern = if ($GroupName -match '[\*\?]') { $GroupName } else { "*$GroupName*" }
     $found = $members | Where-Object { $_.Split('\')[-1] -like $groupPattern }
 
-    # --- 2. Programmversion ---------------------------------------------------
-    # Registry direkt per .NET lesen: Get-ItemProperty bricht komplett ab
-    # ("Die angegebene Umwandlung ist ungueltig"), sobald irgendein
-    # Uninstall-Eintrag einen beschaedigten Wert enthaelt.
+    # --- 2. Program versions ---------------------------------------------------
+    # Read the registry directly via .NET: Get-ItemProperty aborts completely
+    # ("Specified cast is not valid") as soon as any Uninstall entry
+    # contains a corrupt value.
     $apps = @()
     foreach ($view in 'Registry64', 'Registry32') {
         try {
@@ -98,11 +106,11 @@ $checkBlock = {
                             DisplayName    = $name
                             DisplayVersion = [string]$sub.GetValue('DisplayVersion')
                             Status         = $null
-                            Quelle         = "Registry ($view)"
+                            Source         = "Registry ($view)"
                         }
                     }
                     $sub.Close()
-                } catch { }   # einzelne kaputte Eintraege ignorieren
+                } catch { }   # ignore single corrupt entries
             }
             $root.Close(); $base.Close()
         } catch {
@@ -110,49 +118,49 @@ $checkBlock = {
         }
     }
 
-    # Softwarecenter / ConfigMgr-Client immer zusaetzlich abfragen: per
-    # Skript verteilte Pakete haben oft keinen Uninstall-Eintrag.
+    # Always query Software Center / ConfigMgr client as well: packages
+    # deployed via script often have no Uninstall entry.
     try {
         $apps += @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop |
             Where-Object { $_.FullName -like $AppPattern -or $_.Name -like $AppPattern } |
             Select-Object @{n = 'DisplayName';    e = { if ($_.FullName) { $_.FullName } else { $_.Name } } },
                           @{n = 'DisplayVersion'; e = { $_.SoftwareVersion } },
                           @{n = 'Status';         e = { $_.InstallState } },
-                          @{n = 'Quelle';         e = { 'Softwarecenter' } })
+                          @{n = 'Source';         e = { 'Software Center' } })
     } catch {
-        # Kein ConfigMgr-Client vorhanden -> kein Fehler, nur Hinweis
-        $errors += "Softwarecenter (Anwendungen): $($_.Exception.Message)"
+        # No ConfigMgr client installed -> not fatal, just a note
+        $errors += "Software Center (applications): $($_.Exception.Message)"
     }
 
-    # Klassische SCCM-Pakete/Programme: erscheinen im Softwarecenter ebenfalls
-    # unter "Installationsstatus", aber nicht in CCM_Application.
+    # Classic SCCM packages/programs: also shown in Software Center under
+    # "Installation status", but not returned by CCM_Application.
     try {
         $apps += @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Program' -ErrorAction Stop |
             Where-Object { $_.PackageName -like $AppPattern -or $_.Name -like $AppPattern } |
             Select-Object @{n = 'DisplayName';    e = { if ($_.PackageName) { $_.PackageName } else { $_.Name } } },
                           @{n = 'DisplayVersion'; e = { $_.Version } },
                           @{n = 'Status';         e = { $_.LastRunStatus } },
-                          @{n = 'Quelle';         e = { 'Softwarecenter (Paket)' } })
+                          @{n = 'Source';         e = { 'Software Center (package)' } })
     } catch {
-        $errors += "Softwarecenter (Pakete): $($_.Exception.Message)"
+        $errors += "Software Center (packages): $($_.Exception.Message)"
     }
 
-    # Gleiche Eintraege aus 64-/32-Bit-Registry nicht doppelt ausgeben
-    $apps = @($apps | Sort-Object DisplayName, DisplayVersion, Quelle -Unique)
+    # Do not list identical entries from 64-/32-bit registry twice
+    $apps = @($apps | Sort-Object DisplayName, DisplayVersion, Source -Unique)
 
     $common = [ordered]@{
         Computer        = $env:COMPUTERNAME
-        AdminGruppe     = $adminGroup
-        GruppeEnthalten = [bool]$found
-        GefundenAls     = ($found -join '; ')
-        AlleMitglieder  = ($members -join '; ')
+        AdminGroup      = $adminGroup
+        GroupIsMember   = [bool]$found
+        FoundAs         = ($found -join '; ')
+        AllMembers      = ($members -join '; ')
     }
 
     if (-not $apps) {
         $row = [ordered]@{}; foreach ($k in $common.Keys) { $row[$k] = $common[$k] }
-        $row.NeuesteVersion = $null
-        $row.Programm = $null; $row.Version = $null; $row.Status = $null; $row.Quelle = $null
-        $row.Fehler   = ($errors -join ' | ')
+        $row.NewestVersion = $null
+        $row.Program = $null; $row.Version = $null; $row.Status = $null; $row.Source = $null
+        $row.Errors  = ($errors -join ' | ')
         [pscustomobject]$row
         return
     }
@@ -162,20 +170,20 @@ $checkBlock = {
         $app | Add-Member -NotePropertyName Version -NotePropertyValue $v -Force
     }
 
-    # Hoechste Version ermitteln ("03.02" -> 3.2)
+    # Determine highest version ("03.02" -> 3.2)
     $newest = $apps | Where-Object { $_.Version -as [version] } |
         Sort-Object { [version]$_.Version } -Descending | Select-Object -First 1
-    $common.NeuesteVersion = if ($newest) { $newest.Version } else { $null }
+    $common.NewestVersion = if ($newest) { $newest.Version } else { $null }
 
-    # Eine Zeile pro gefundenem Programm-Eintrag
+    # One row per program entry found
     foreach ($app in $apps) {
         $version = $app.Version
         $row = [ordered]@{}; foreach ($k in $common.Keys) { $row[$k] = $common[$k] }
-        $row.Programm = $app.DisplayName
+        $row.Program  = $app.DisplayName
         $row.Version  = $version
         $row.Status   = $app.Status
-        $row.Quelle   = $app.Quelle
-        $row.Fehler   = ($errors -join ' | ')
+        $row.Source   = $app.Source
+        $row.Errors   = ($errors -join ' | ')
         [pscustomobject]$row
     }
 }
@@ -194,54 +202,55 @@ $results = foreach ($pc in $ComputerName) {
         }
     } catch {
         [pscustomobject]@{
-            Computer = $pc; AdminGruppe = $null; GruppeEnthalten = $null; GefundenAls = $null
-            AlleMitglieder = $null; NeuesteVersion = $null; Programm = $null; Version = $null; Status = $null; Quelle = $null
-            Fehler = "$($_.Exception.Message) [Zeile $($_.InvocationInfo.ScriptLineNumber)]"
+            Computer = $pc; AdminGroup = $null; GroupIsMember = $null; FoundAs = $null
+            AllMembers = $null; NewestVersion = $null; Program = $null; Version = $null; Status = $null; Source = $null
+            Errors = "$($_.Exception.Message) [line $($_.InvocationInfo.ScriptLineNumber)]"
         }
     }
 }
 
-# Ausgabe: pro Rechner einmal die Admin-Infos, darunter die Versionen
+# Output: admin info once per computer, followed by the versions
 $summary = foreach ($pcGroup in ($results | Group-Object Computer)) {
     $first    = $pcGroup.Group[0]
     $versions = @($pcGroup.Group | Where-Object { $_.Version })
 
     Write-Host ''
     Write-Host "=== $($first.Computer) ===" -ForegroundColor Cyan
-    Write-Host "Admin-Gruppe      : $($first.AdminGruppe)"
-    if ($first.GruppeEnthalten) {
-        Write-Host "DLG-Gruppe drin   : Ja ($($first.GefundenAls))" -ForegroundColor Green
+    Write-Host "Admin group       : $($first.AdminGroup)"
+    if ($first.GroupIsMember) {
+        Write-Host "DLG group member  : Yes ($($first.FoundAs))" -ForegroundColor Green
     } else {
-        Write-Host "DLG-Gruppe drin   : Nein" -ForegroundColor Red
+        Write-Host "DLG group member  : No" -ForegroundColor Red
     }
-    Write-Host "Mitglieder        :"
-    foreach ($m in ($first.AlleMitglieder -split '; ' | Where-Object { $_ })) {
+    Write-Host "Members           :"
+    foreach ($m in ($first.AllMembers -split '; ' | Where-Object { $_ })) {
         Write-Host "    $m"
     }
-    Write-Host "Neueste Version   : $($first.NeuesteVersion)"
-    if ($first.Fehler) {
-        Write-Host "Fehler            : $($first.Fehler)" -ForegroundColor Yellow
+    Write-Host "Newest version    : $($first.NewestVersion)"
+    if ($first.Errors) {
+        Write-Host "Errors            : $($first.Errors)" -ForegroundColor Yellow
     }
 
     if ($versions) {
-        $versions | Format-Table Version, Status, Quelle, Programm -AutoSize | Out-String | Write-Host
+        $versions | Format-Table Version, Status, Source, Program -AutoSize | Out-String | Write-Host
     } else {
-        Write-Host 'Keine Version gefunden.' -ForegroundColor Red
+        Write-Host 'No version found.' -ForegroundColor Red
     }
 
-    # Eine CSV-Zeile pro Rechner
+    # One CSV row per computer
     [pscustomobject]@{
-        Computer        = $first.Computer
-        GruppeEnthalten = $first.GruppeEnthalten
-        GefundenAls     = $first.GefundenAls
-        AlleMitglieder  = $first.AlleMitglieder
-        NeuesteVersion  = $first.NeuesteVersion
-        Versionen       = (($versions | ForEach-Object { "$($_.Version) ($($_.Status))" }) -join ', ')
-        Fehler          = $first.Fehler
+        Computer      = $first.Computer
+        GroupIsMember = $first.GroupIsMember
+        FoundAs       = $first.FoundAs
+        AllMembers    = $first.AllMembers
+        NewestVersion = $first.NewestVersion
+        Versions      = (($versions | ForEach-Object { "$($_.Version) ($($_.Status))" }) -join ', ')
+        Errors        = $first.Errors
     }
 }
 
 if ($CsvPath) {
-    $summary | Export-Csv -Path $CsvPath -NoTypeInformation -Delimiter ';' -Encoding UTF8
-    Write-Host "Ergebnis gespeichert: $CsvPath"
+    # -UseCulture: list separator of the regional settings (',' or ';'), so Excel opens it correctly
+    $summary | Export-Csv -Path $CsvPath -NoTypeInformation -UseCulture -Encoding UTF8
+    Write-Host "Result saved: $CsvPath"
 }
