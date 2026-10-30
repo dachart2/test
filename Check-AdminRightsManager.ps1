@@ -73,7 +73,11 @@ $checkBlock = {
         $errors += "Admin-Gruppe: $($_.Exception.Message)"
     }
 
-    $found = $members | Where-Object { $_.Split('\')[-1] -ieq $GroupName }
+    # Teilstring-Suche: in der Domaene heisst die Gruppe z. B.
+    # "U_RES_DLG_WORKSTATIONS-LOHR_II_IDS". Eigene Wildcards (*, ?) im
+    # Parameter werden direkt verwendet.
+    $groupPattern = if ($GroupName -match '[\*\?]') { $GroupName } else { "*$GroupName*" }
+    $found = $members | Where-Object { $_.Split('\')[-1] -like $groupPattern }
 
     # --- 2. Programmversion ---------------------------------------------------
     # Registry direkt per .NET lesen: Get-ItemProperty bricht komplett ab
@@ -201,7 +205,7 @@ $results | Format-List
 
 Write-Host ''
 Write-Host 'Kurzuebersicht:'
-$results | Format-Table Computer, GruppeEnthalten, NeuesteVersion, Version, Status, Quelle -AutoSize
+$results | Format-Table Computer, GruppeEnthalten, GefundenAls, NeuesteVersion, Version, Status, Quelle -AutoSize
 
 if ($CsvPath) {
     $results | Export-Csv -Path $CsvPath -NoTypeInformation -Delimiter ';' -Encoding UTF8
