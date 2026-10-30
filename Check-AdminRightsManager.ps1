@@ -33,8 +33,14 @@
 .PARAMETER AppPattern
     Wildcard pattern for the program name.
 
+.PARAMETER Prompt
+    Ask for the computer name(s) interactively (used by the .cmd launcher).
+
 .EXAMPLE
     .\Check-AdminRightsManager.ps1
+
+.EXAMPLE
+    .\Check-AdminRightsManager.ps1 -ComputerName NB-001, NB-002
 
 .EXAMPLE
     .\Check-AdminRightsManager.ps1 -ComputerListFile .\pcs.txt -CsvPath .\result.csv
@@ -45,7 +51,8 @@ param(
     [string]$ComputerListFile,
     [string]$CsvPath,
     [string]$GroupName = 'dlg_workstations-lohr',
-    [string]$AppPattern = '*AdminRightsManager*'
+    [string]$AppPattern = '*AdminRightsManager*',
+    [switch]$Prompt
 )
 
 $checkBlock = {
@@ -192,19 +199,34 @@ if ($ComputerListFile) {
     $ComputerName = Get-Content $ComputerListFile | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }
 }
 
+if ($Prompt) {
+    $answer = Read-Host 'Computer name(s), comma separated (empty = this computer)'
+    if ($answer.Trim()) {
+        $ComputerName = $answer -split '[,;\s]+' | Where-Object { $_ }
+    }
+}
+
 $results = foreach ($pc in $ComputerName) {
     try {
         if ($pc -ieq $env:COMPUTERNAME -or $pc -in @('localhost', '.')) {
             & $checkBlock $GroupName $AppPattern
         } else {
+            if (-not (Test-Connection -ComputerName $pc -Count 1 -Quiet)) {
+                throw "Not reachable (offline, not on network/VPN, or ping blocked)"
+            }
+            Write-Host "Querying $pc ..." -ForegroundColor DarkGray
             Invoke-Command -ComputerName $pc -ScriptBlock $checkBlock -ArgumentList $GroupName, $AppPattern -ErrorAction Stop |
                 Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
         }
     } catch {
+        $msg = $_.Exception.Message
+        if ($_.Exception -is [System.Management.Automation.Remoting.PSRemotingTransportException]) {
+            $msg = "Remote access failed - WinRM not enabled on $pc or no admin rights there. Details: $msg"
+        }
         [pscustomobject]@{
             Computer = $pc; AdminGroup = $null; GroupIsMember = $null; FoundAs = $null
             AllMembers = $null; NewestVersion = $null; Program = $null; Version = $null; Status = $null; Source = $null
-            Errors = "$($_.Exception.Message) [line $($_.InvocationInfo.ScriptLineNumber)]"
+            Errors = $msg
         }
     }
 }
