@@ -117,7 +117,20 @@ $checkBlock = {
                           @{n = 'Quelle';         e = { 'Softwarecenter' } })
     } catch {
         # Kein ConfigMgr-Client vorhanden -> kein Fehler, nur Hinweis
-        $errors += "Softwarecenter: $($_.Exception.Message)"
+        $errors += "Softwarecenter (Anwendungen): $($_.Exception.Message)"
+    }
+
+    # Klassische SCCM-Pakete/Programme: erscheinen im Softwarecenter ebenfalls
+    # unter "Installationsstatus", aber nicht in CCM_Application.
+    try {
+        $apps += @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Program' -ErrorAction Stop |
+            Where-Object { $_.PackageName -like $AppPattern -or $_.Name -like $AppPattern } |
+            Select-Object @{n = 'DisplayName';    e = { if ($_.PackageName) { $_.PackageName } else { $_.Name } } },
+                          @{n = 'DisplayVersion'; e = { $_.Version } },
+                          @{n = 'Status';         e = { $_.LastRunStatus } },
+                          @{n = 'Quelle';         e = { 'Softwarecenter (Paket)' } })
+    } catch {
+        $errors += "Softwarecenter (Pakete): $($_.Exception.Message)"
     }
 
     # Gleiche Eintraege aus 64-/32-Bit-Registry nicht doppelt ausgeben
@@ -133,19 +146,26 @@ $checkBlock = {
 
     if (-not $apps) {
         $row = [ordered]@{}; foreach ($k in $common.Keys) { $row[$k] = $common[$k] }
+        $row.NeuesteVersion = $null
         $row.Programm = $null; $row.Version = $null; $row.Status = $null; $row.Quelle = $null
         $row.Fehler   = ($errors -join ' | ')
         [pscustomobject]$row
         return
     }
 
+    foreach ($app in $apps) {
+        $v = if ($app.DisplayName -match 'version\s*:\s*([\d\.]+)') { $Matches[1] } else { $app.DisplayVersion }
+        $app | Add-Member -NotePropertyName Version -NotePropertyValue $v -Force
+    }
+
+    # Hoechste Version ermitteln ("03.02" -> 3.2)
+    $newest = $apps | Where-Object { $_.Version -as [version] } |
+        Sort-Object { [version]$_.Version } -Descending | Select-Object -First 1
+    $common.NeuesteVersion = if ($newest) { $newest.Version } else { $null }
+
     # Eine Zeile pro gefundenem Programm-Eintrag
     foreach ($app in $apps) {
-        if ($app.DisplayName -match 'version\s*:\s*([\d\.]+)') {
-            $version = $Matches[1]
-        } else {
-            $version = $app.DisplayVersion
-        }
+        $version = $app.Version
         $row = [ordered]@{}; foreach ($k in $common.Keys) { $row[$k] = $common[$k] }
         $row.Programm = $app.DisplayName
         $row.Version  = $version
@@ -171,7 +191,7 @@ $results = foreach ($pc in $ComputerName) {
     } catch {
         [pscustomobject]@{
             Computer = $pc; AdminGruppe = $null; GruppeEnthalten = $null; GefundenAls = $null
-            AlleMitglieder = $null; Programm = $null; Version = $null; Status = $null; Quelle = $null
+            AlleMitglieder = $null; NeuesteVersion = $null; Programm = $null; Version = $null; Status = $null; Quelle = $null
             Fehler = "$($_.Exception.Message) [Zeile $($_.InvocationInfo.ScriptLineNumber)]"
         }
     }
@@ -181,7 +201,7 @@ $results | Format-List
 
 Write-Host ''
 Write-Host 'Kurzuebersicht:'
-$results | Format-Table Computer, GruppeEnthalten, Programm, Version, Status, Quelle -AutoSize
+$results | Format-Table Computer, GruppeEnthalten, NeuesteVersion, Version, Status, Quelle -AutoSize
 
 if ($CsvPath) {
     $results | Export-Csv -Path $CsvPath -NoTypeInformation -Delimiter ';' -Encoding UTF8
