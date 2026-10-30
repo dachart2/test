@@ -201,13 +201,47 @@ $results = foreach ($pc in $ComputerName) {
     }
 }
 
-$results | Format-List
+# Ausgabe: pro Rechner einmal die Admin-Infos, darunter die Versionen
+$summary = foreach ($pcGroup in ($results | Group-Object Computer)) {
+    $first    = $pcGroup.Group[0]
+    $versions = @($pcGroup.Group | Where-Object { $_.Version })
 
-Write-Host ''
-Write-Host 'Kurzuebersicht:'
-$results | Format-Table Computer, GruppeEnthalten, GefundenAls, NeuesteVersion, Version, Status, Quelle -AutoSize
+    Write-Host ''
+    Write-Host "=== $($first.Computer) ===" -ForegroundColor Cyan
+    Write-Host "Admin-Gruppe      : $($first.AdminGruppe)"
+    if ($first.GruppeEnthalten) {
+        Write-Host "DLG-Gruppe drin   : Ja ($($first.GefundenAls))" -ForegroundColor Green
+    } else {
+        Write-Host "DLG-Gruppe drin   : Nein" -ForegroundColor Red
+    }
+    Write-Host "Mitglieder        :"
+    foreach ($m in ($first.AlleMitglieder -split '; ' | Where-Object { $_ })) {
+        Write-Host "    $m"
+    }
+    Write-Host "Neueste Version   : $($first.NeuesteVersion)"
+    if ($first.Fehler) {
+        Write-Host "Fehler            : $($first.Fehler)" -ForegroundColor Yellow
+    }
+
+    if ($versions) {
+        $versions | Format-Table Version, Status, Quelle, Programm -AutoSize | Out-String | Write-Host
+    } else {
+        Write-Host 'Keine Version gefunden.' -ForegroundColor Red
+    }
+
+    # Eine CSV-Zeile pro Rechner
+    [pscustomobject]@{
+        Computer        = $first.Computer
+        GruppeEnthalten = $first.GruppeEnthalten
+        GefundenAls     = $first.GefundenAls
+        AlleMitglieder  = $first.AlleMitglieder
+        NeuesteVersion  = $first.NeuesteVersion
+        Versionen       = (($versions | ForEach-Object { "$($_.Version) ($($_.Status))" }) -join ', ')
+        Fehler          = $first.Fehler
+    }
+}
 
 if ($CsvPath) {
-    $results | Export-Csv -Path $CsvPath -NoTypeInformation -Delimiter ';' -Encoding UTF8
+    $summary | Export-Csv -Path $CsvPath -NoTypeInformation -Delimiter ';' -Encoding UTF8
     Write-Host "Ergebnis gespeichert: $CsvPath"
 }
