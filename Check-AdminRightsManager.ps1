@@ -43,51 +43,85 @@ param(
 $checkBlock = {
     param($GroupName, $AppPattern)
 
+    $errors     = @()
+    $adminGroup = $null
+    $members    = @()
+
     # --- 1. Lokale Administratoren-Gruppe -----------------------------------
-    $adminSid   = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
-    $adminGroup = $adminSid.Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+    try {
+        $adminSid   = [System.Security.Principal.SecurityIdentifier]'S-1-5-32-544'
+        $adminGroup = $adminSid.Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+    } catch {
+        $adminGroup = 'Administratoren'
+        $errors += "SID-Aufloesung: $($_.Exception.Message)"
+    }
 
     # ADSI statt Get-LocalGroupMember, da letzteres bei verwaisten SIDs
     # bzw. Azure-AD-Mitgliedern mit einem Fehler abbricht.
-    $members = @()
     try {
         $group = [ADSI]"WinNT://$env:COMPUTERNAME/$adminGroup,group"
-        foreach ($m in $group.psbase.Invoke('Members')) {
-            $path = $m.GetType().InvokeMember('ADsPath', 'GetProperty', $null, $m, $null)
-            # WinNT://DOMAIN/Name  bzw.  WinNT://DOMAIN/PC/Name
-            $members += ($path -replace '^WinNT://', '' -replace '/', '\')
+        foreach ($m in @($group.psbase.Invoke('Members'))) {
+            try {
+                $path = $m.GetType().InvokeMember('ADsPath', 'GetProperty', $null, $m, $null)
+                # WinNT://DOMAIN/Name  bzw.  WinNT://DOMAIN/PC/Name
+                $members += ($path -replace '^WinNT://', '' -replace '/', '\')
+            } catch {
+                $errors += "Mitglied: $($_.Exception.Message)"
+            }
         }
-        $groupError = $null
     } catch {
-        $groupError = $_.Exception.Message
+        $errors += "Admin-Gruppe: $($_.Exception.Message)"
     }
 
     $found = $members | Where-Object { $_.Split('\')[-1] -ieq $GroupName }
 
     # --- 2. Programmversion ---------------------------------------------------
-    $regPaths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    $apps = Get-ItemProperty -Path $regPaths -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -like $AppPattern }
+    # Registry direkt per .NET lesen: Get-ItemProperty bricht komplett ab
+    # ("Die angegebene Umwandlung ist ungueltig"), sobald irgendein
+    # Uninstall-Eintrag einen beschaedigten Wert enthaelt.
+    $apps = @()
+    foreach ($view in 'Registry64', 'Registry32') {
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', $view)
+            $root = $base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+            if (-not $root) { continue }
+            foreach ($subName in $root.GetSubKeyNames()) {
+                try {
+                    $sub  = $root.OpenSubKey($subName)
+                    $name = [string]$sub.GetValue('DisplayName')
+                    if ($name -like $AppPattern) {
+                        $apps += [pscustomobject]@{
+                            DisplayName    = $name
+                            DisplayVersion = [string]$sub.GetValue('DisplayVersion')
+                        }
+                    }
+                    $sub.Close()
+                } catch { }   # einzelne kaputte Eintraege ignorieren
+            }
+            $root.Close(); $base.Close()
+        } catch {
+            $errors += "Registry ($view): $($_.Exception.Message)"
+        }
+    }
 
     $source = 'Registry'
     if (-not $apps) {
         # Fallback: Softwarecenter / ConfigMgr-Client
         try {
-            $apps = Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop |
+            $apps = @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop |
                 Where-Object { $_.FullName -like $AppPattern -or $_.Name -like $AppPattern } |
                 Select-Object @{n = 'DisplayName';    e = { if ($_.FullName) { $_.FullName } else { $_.Name } } },
                               @{n = 'DisplayVersion'; e = { $_.SoftwareVersion } },
-                              @{n = 'Installed';      e = { $_.InstallState } }
+                              @{n = 'Installed';      e = { $_.InstallState } })
             $source = 'Softwarecenter'
-        } catch { $apps = $null }
+        } catch {
+            $errors += "Softwarecenter: $($_.Exception.Message)"
+        }
     }
 
     $appName = $null; $appVersion = $null
     if ($apps) {
-        $app     = @($apps)[0]
+        $app     = $apps[0]
         $appName = $app.DisplayName
         if ($appName -match 'version\s*:\s*([\d\.]+)') {
             $appVersion = $Matches[1]
@@ -104,10 +138,11 @@ $checkBlock = {
         AdminGruppe       = $adminGroup
         GruppeEnthalten   = [bool]$found
         GefundenAls       = ($found -join '; ')
-        Fehler            = $groupError
+        AlleMitglieder    = ($members -join '; ')
         Programm          = $appName
         Version           = $appVersion
         Quelle            = if ($apps) { $source } else { $null }
+        Fehler            = ($errors -join ' | ')
     }
 }
 
@@ -126,7 +161,8 @@ $results = foreach ($pc in $ComputerName) {
     } catch {
         [pscustomobject]@{
             Computer = $pc; AdminGruppe = $null; GruppeEnthalten = $null; GefundenAls = $null
-            Fehler = $_.Exception.Message; Programm = $null; Version = $null; Quelle = $null
+            AlleMitglieder = $null; Programm = $null; Version = $null; Quelle = $null
+            Fehler = "$($_.Exception.Message) [Zeile $($_.InvocationInfo.ScriptLineNumber)]"
         }
     }
 }
