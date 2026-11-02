@@ -8,7 +8,7 @@ Für Windows 11 Pro, ausgelegt auf Surface mit Snapdragon (ARM64).
 |---|---|
 | Debloat | Entfernt vorinstallierte Apps (News, Wetter, Xbox, Teams, Outlook, Copilot, Clipchamp, Widgets, Phone Link, …) für alle User **und** aus dem Provisioning-Image. Deaktiviert Recall (Copilot+ PC). Deinstalliert OneDrive. |
 | Richtlinien | Keine Werbung/Tipps/vorgeschlagenen Apps, kein Copilot, kein Recall/Click to Do, keine Widgets, keine Websuche im Startmenü, OneDrive blockiert, Edge ohne Shopping/Sidebar/Rewards/Erststart-Assistent. Telemetrie auf „Erforderlich“ (Minimum bei Pro). |
-| Kiosk | Assigned Access mit Edge. Windows legt selbst ein lokales Kiosk-Konto an (Anzeigename „Surfen“, kein Passwort, keine Adminrechte) und meldet es automatisch an. Der User sieht nur Edge im Vollbild. |
+| Kiosk | Assigned Access mit Edge. Windows legt selbst ein lokales Kiosk-Konto an (Anzeigename „Haustechnik“, kein Passwort, keine Adminrechte) und meldet es automatisch an. Der User sieht nur Edge im Vollbild. |
 
 **Bewusst nicht angefasst:** Windows Update, Defender, Firewall, Treiber/Firmware, Surface-App, Microsoft Store, Edge.
 
@@ -28,10 +28,10 @@ Log: `C:\ProgramData\SurfaceKiosk\setup.log`
 
 | Parameter | Standard | Bedeutung |
 |---|---|---|
-| `-StartUrl` | `https://www.google.com` | Startseite |
+| `-StartUrl` | `http://test.at` | Startseite |
 | `-KioskType` | `PublicBrowsing` | `PublicBrowsing` = Adressleiste + Tabs, nur InPrivate. `Fullscreen` = eine Seite ohne Adressleiste (Digital Signage). |
 | `-IdleResetMinutes` | `15` | Nach X Minuten Inaktivität wird die Sitzung zurückgesetzt. `0` = nie. |
-| `-KioskDisplayName` | `Surfen` | Name des Kiosk-Kontos |
+| `-KioskDisplayName` | `Haustechnik` | Name des Kiosk-Kontos |
 | `-SkipDebloat` / `-SkipPolicies` / `-SkipKiosk` | – | Schritt überspringen |
 
 ## Wichtig zu wissen (Einschränkungen)

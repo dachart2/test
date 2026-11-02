@@ -53,8 +53,8 @@
 
 .EXAMPLE
     .\Setup-SurfaceKiosk.ps1
-    Full setup with defaults (start page Google, public browsing, reset after
-    15 minutes idle).
+    Full setup with defaults (account "Haustechnik", start page http://test.at,
+    public browsing, reset after 15 minutes idle).
 
 .EXAMPLE
     .\Setup-SurfaceKiosk.ps1 -StartUrl "https://www.startpage.com" -IdleResetMinutes 0
@@ -70,7 +70,7 @@
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [string]$StartUrl = 'https://www.google.com',
+    [string]$StartUrl = 'http://test.at',
 
     [ValidateSet('PublicBrowsing', 'Fullscreen')]
     [string]$KioskType = 'PublicBrowsing',
@@ -78,7 +78,7 @@ param(
     [ValidateRange(0, 1440)]
     [int]$IdleResetMinutes = 15,
 
-    [string]$KioskDisplayName = 'Surfen',
+    [string]$KioskDisplayName = 'Haustechnik',
 
     [switch]$SkipDebloat,
     [switch]$SkipPolicies,
